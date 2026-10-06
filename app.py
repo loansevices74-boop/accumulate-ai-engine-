@@ -23,6 +23,30 @@ class OddsAPIService:
             pass
         return []
 
+class AllSportsAPIService:
+    """Unified fixtures and scores for Football & Basketball from AllSportsAPI.com"""
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.allsportsapi.com"
+
+    def get_fixtures(self, sport: str, days: int = 7) -> List[Dict[str, Any]]:
+        """Fetches fixtures for 'football' or 'basketball'."""
+        today = date.today().isoformat()
+        future = (date.today() + timedelta(days=days)).isoformat()
+        
+        # AllSportsAPI endpoint structure
+        url = f"{self.base_url}/{sport}/?met=Fixtures&APIkey={self.api_key}&from={today}&to={future}"
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                # AllSportsAPI returns a 'result' key with a list of matches, or 'success' boolean
+                if data.get("success") and "result" in data:
+                    return data["result"]
+        except Exception:
+            pass
+        return []
+
 class FootballDataService:
     """Deep football fixtures and stats from football-data.org"""
     def __init__(self, api_key: str):
@@ -50,7 +74,6 @@ class BalldontlieService:
         self.headers = {"Authorization": self.api_key} if self.api_key else {}
 
     def get_upcoming_games(self, days: int = 7) -> List[Dict[str, Any]]:
-        # Balldontlie requires specific dates. We'll fetch today and the next few days.
         all_games = []
         for i in range(days):
             target_date = (date.today() + timedelta(days=i)).isoformat()
@@ -59,7 +82,6 @@ class BalldontlieService:
                 response = requests.get(url, headers=self.headers)
                 if response.status_code == 200:
                     data = response.json().get("data", [])
-                    # Filter for future games
                     for game in data:
                         if game["status"] == "Scheduled":
                             all_games.append(game)
@@ -176,10 +198,11 @@ class AccumulatorBuilder:
 st.set_page_config(page_title="Global Multi-Sport Accumulator & Data Hub", layout="wide", page_icon="⚽")
 
 st.title("⚡ Global Multi-Sport Data Hub & Accumulator Machine")
-st.caption("Powered by The Odds API, Football-Data.org, and Balldontlie.io")
+st.caption("Powered by The Odds API, AllSportsAPI.com, Football-Data.org, and Balldontlie.io")
 
 st.sidebar.header("🔑 API Credentials")
 odds_api_key = st.sidebar.text_input("The Odds API Key", type="password", value=st.secrets.get("ODDS_API_KEY", ""))
+allsports_api_key = st.sidebar.text_input("AllSportsAPI.com Key", type="password", value=st.secrets.get("ALLSPORTS_API_KEY", ""))
 football_api_key = st.sidebar.text_input("Football-Data.org Key", type="password", value=st.secrets.get("FOOTBALL_DATA_API_KEY", ""))
 basketball_api_key = st.sidebar.text_input("Balldontlie.io Key (Optional)", type="password", value=st.secrets.get("BALLDONTLIE_API_KEY", ""))
 
@@ -211,6 +234,7 @@ FOOTBALL_COMPETITIONS = {
 
 tabs = st.tabs([
     "📅 Accumulator Builder (Odds API)", 
+    "🌐 AllSportsAPI Fixtures",
     "⚽ Football Fixtures (Football-Data.org)", 
     "🏀 Basketball Fixtures (Balldontlie)"
 ])
@@ -246,9 +270,45 @@ with tabs[0]:
                     c1.metric("Avg Confidence", f"{df.attrs['avg_confidence']}%")
                     c2.metric("Combined Odds", f"{df.attrs['combined_odds']}x")
 
-# --- TAB 1: FOOTBALL FIXTURES ---
+# --- TAB 1: ALLSPORTSAPI FIXTURES ---
 with tabs[1]:
-    st.header("⚽ Deep Football Fixtures & Stats")
+    st.header("🌐 Unified Fixtures via AllSportsAPI.com")
+    if not allsports_api_key:
+        st.info("Enter your AllSportsAPI.com API key in the sidebar to view unified fixtures.")
+    else:
+        sport_choice = st.radio("Select Sport for AllSportsAPI", ["football", "basketball"], horizontal=True)
+        days_to_fetch = st.slider("Days to fetch", 1, 14, 7)
+        
+        if st.button("Load AllSportsAPI Fixtures"):
+            with st.spinner(f"Fetching {sport_choice} fixtures from AllSportsAPI..."):
+                service = AllSportsAPIService(allsports_api_key)
+                fixtures = service.get_fixtures(sport_choice, days=days_to_fetch)
+            
+            if not fixtures:
+                st.warning(f"No upcoming {sport_choice} fixtures found in the next {days_to_fetch} days.")
+            else:
+                st.success(f"Found {len(fixtures)} upcoming {sport_choice} matches")
+                rows = []
+                for f in fixtures:
+                    # AllSportsAPI response structure varies slightly, this handles the common fields
+                    home = f.get("home_team", f.get("event_home_team", "Unknown"))
+                    away = f.get("away_team", f.get("event_away_team", "Unknown"))
+                    date_str = f.get("event_date", f.get("fixture_date", ""))
+                    time_str = f.get("event_time", f.get("fixture_time", ""))
+                    league = f.get("league_name", f.get("competition", "Unknown"))
+                    
+                    rows.append({
+                        "League": league,
+                        "Date": date_str,
+                        "Time": time_str,
+                        "Home": home,
+                        "Away": away,
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+# --- TAB 2: FOOTBALL FIXTURES (Football-Data.org) ---
+with tabs[2]:
+    st.header("⚽ Deep Football Fixtures & Stats (Football-Data.org)")
     if not football_api_key:
         st.info("Enter your Football-Data.org API key in the sidebar to view detailed fixtures.")
     else:
@@ -271,14 +331,14 @@ with tabs[1]:
                         "Time": m["utcDate"][11:16] + " UTC",
                         "Home": m["homeTeam"]["name"],
                         "Away": m["awayTeam"]["name"],
-                        "Venue": m["venue"],
-                        "Matchday": m["matchday"]
+                        "Venue": m.get("venue", "TBD"),
+                        "Matchday": m.get("matchday", "N/A")
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-# --- TAB 2: BASKETBALL FIXTURES ---
-with tabs[2]:
-    st.header("🏀 Deep Basketball Fixtures (NBA / NCAA)")
+# --- TAB 3: BASKETBALL FIXTURES (Balldontlie) ---
+with tabs[3]:
+    st.header("🏀 Deep Basketball Fixtures (Balldontlie.io)")
     if st.button("Load Basketball Fixtures"):
         with st.spinner("Fetching from balldontlie.io..."):
             bb_service = BalldontlieService(basketball_api_key)
@@ -295,7 +355,7 @@ with tabs[2]:
                     "Time": g["time"],
                     "Home Team": g["home_team"]["full_name"],
                     "Away Team": g["visitor_team"]["full_name"],
-                    "League": "NBA" if g["season"] >= 2000 else "NCAA", # Simplified
+                    "League": "NBA" if g.get("season", 0) >= 2000 else "NCAA",
                     "Status": g["status"]
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
